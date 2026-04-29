@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
+import argparse
 import csv
 from dataclasses import dataclass
-import sys
 import subprocess
 from pathlib import Path
 from datetime import datetime
@@ -29,7 +29,7 @@ class Transaction:
 
 FORMAT_PROFILES = (
     FormatProfile(
-        name="Digital format (Type A)",
+        name="Revolut",
         header_markers=("Tipo,Producto",),
         entity_code="RV",
         delimiter=",",
@@ -40,7 +40,7 @@ FORMAT_PROFILES = (
         skip_header_rows=1,
     ),
     FormatProfile(
-        name="Traditional bank format (Type B)",
+        name="Laboral Kutxa",
         header_markers=("Cantidades expresadas en euros",),
         entity_code="LK",
         delimiter=";",
@@ -50,12 +50,26 @@ FORMAT_PROFILES = (
         amount_idx=4,
         skip_header_rows=1,
     ),
+    FormatProfile(
+        name="Banco Santander",
+        header_markers=(",,CUENTA SANTANDER,FECHA,",),
+        entity_code="SN",
+        delimiter=",",
+        input_date_format="%d/%m/%Y",
+        date_idx=0,
+        description_idx=2,
+        amount_idx=3,
+        skip_header_rows=8,
+    ),
 )
 
 
-def read_file_preview(input_path: Path, lines_to_read: int = 3) -> str:
+def read_file_preview(input_path: Path, lines_to_read: int = 3, first_row: int = 1) -> str:
     preview_lines = []
     with input_path.open("r", encoding="utf-8-sig") as input_file:
+        for _ in range(max(first_row - 1, 0)):
+            if not input_file.readline():
+                return ""
         for _ in range(lines_to_read):
             line = input_file.readline()
             if not line:
@@ -72,12 +86,14 @@ def detect_format_profile(header_preview: str) -> FormatProfile | None:
     return None
 
 
-def parse_transactions(input_path: Path, profile: FormatProfile) -> list[Transaction]:
+def parse_transactions(input_path: Path, profile: FormatProfile, first_row: int = 1) -> list[Transaction]:
     transactions = []
     max_index = max(profile.date_idx, profile.description_idx, profile.amount_idx)
 
     with input_path.open("r", encoding="utf-8-sig") as csv_file:
         reader = csv.reader(csv_file, delimiter=profile.delimiter)
+        for _ in range(max(first_row - 1, 0)):
+            next(reader, None)
         for _ in range(profile.skip_header_rows):
             next(reader, None)
 
@@ -129,7 +145,11 @@ def send_notification(output_path: Path) -> None:
     )
 
 
-def process_file(input_file_path: str, output_folder_path: str | None = None) -> None:
+def process_file(
+    input_file_path: str,
+    output_folder_path: str | None = None,
+    first_row: int = 1,
+) -> None:
     input_path = Path(input_file_path)
     output_folder = (
         Path(output_folder_path).expanduser()
@@ -139,14 +159,14 @@ def process_file(input_file_path: str, output_folder_path: str | None = None) ->
     output_folder.mkdir(parents=True, exist_ok=True)
 
     try:
-        header_preview = read_file_preview(input_path)
+        header_preview = read_file_preview(input_path, first_row=first_row)
         profile = detect_format_profile(header_preview)
         if profile is None:
             print("Error: unsupported header format.")
             return
 
         print(f"Detected: {profile.name}")
-        transactions = parse_transactions(input_path, profile)
+        transactions = parse_transactions(input_path, profile, first_row=first_row)
         if not transactions:
             print("Warning: no transactions found.")
             return
@@ -157,9 +177,26 @@ def process_file(input_file_path: str, output_folder_path: str | None = None) ->
     except Exception as exc:
         print(f"Critical error: {exc}")
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Convert CSV bank exports to QIF.")
+    parser.add_argument("input_file", help="Input CSV file path.")
+    parser.add_argument(
+        "output_folder",
+        nargs="?",
+        help="Output folder path. Defaults to ~/Documentos/csv2qif",
+    )
+    parser.add_argument(
+        "--first-row",
+        type=int,
+        default=1,
+        help="First row to read from the CSV file (1-based).",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python3 csv2qif.py input_file.csv [output_folder]")
+    args = parse_args()
+    if args.first_row < 1:
+        print("Error: --first-row must be >= 1.")
     else:
-        target_output_folder = sys.argv[2] if len(sys.argv) > 2 else None
-        process_file(sys.argv[1], target_output_folder)
+        process_file(args.input_file, args.output_folder, args.first_row)
